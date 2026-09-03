@@ -69,6 +69,34 @@ data class AbandonedItem(
     val cartNames: List<String>
 )
 
+data class JourneyCartItem(
+    val name: String,
+    val quantity: Double,
+    val lineTotal: Double
+)
+
+data class TimelineEvent(
+    val id: Long,
+    val type: String,
+    val label: String,
+    val productName: String?,
+    val quantity: Double,
+    val value: Double,
+    val time: String
+)
+
+data class JourneyDetail(
+    val journeyId: String,
+    val visitor: String,
+    val status: String,
+    val cartItems: Int,
+    val cartTotal: Double,
+    val checkoutStarted: String?,
+    val purchasedAt: String?,
+    val cart: List<JourneyCartItem>,
+    val timeline: List<TimelineEvent>
+)
+
 class ApiClient(private val token: String) {
 
     private suspend fun get(path: String): JSONObject = withContext(Dispatchers.IO) {
@@ -201,5 +229,54 @@ class ApiClient(private val token: String) {
                 )
             }
         }
+    }
+
+    suspend fun journey(journeyId: String): JourneyDetail {
+        val o = get("journey/$journeyId")
+
+        val cartArray = o.optJSONArray("cart") ?: JSONArray()
+        val cartItems = buildList {
+            for (i in 0 until cartArray.length()) {
+                val item = cartArray.getJSONObject(i)
+                add(
+                    JourneyCartItem(
+                        name = item.optString("name", "Ürün"),
+                        quantity = item.optDouble("quantity", 1.0),
+                        lineTotal = item.optDouble("line_total", 0.0)
+                    )
+                )
+            }
+        }
+
+        val timelineArray = o.optJSONArray("timeline") ?: JSONArray()
+        val timeline = buildList {
+            for (i in 0 until timelineArray.length()) {
+                val event = timelineArray.getJSONObject(i)
+                add(
+                    TimelineEvent(
+                        id = event.optLong("id"),
+                        type = event.optString("type"),
+                        label = event.optString("label"),
+                        productName = event.optString("product_name")
+                            .takeIf { it.isNotBlank() && it != "null" },
+                        quantity = event.optDouble("quantity"),
+                        value = event.optDouble("value"),
+                        time = event.optString("time")
+                    )
+                )
+            }
+        }
+
+        return JourneyDetail(
+            journeyId = o.optString("journey_id"),
+            visitor = o.optString("visitor"),
+            status = o.optString("status"),
+            cartItems = o.optInt("cart_items"),
+            cartTotal = o.optDouble("cart_total"),
+            checkoutStarted = o.optString("checkout_started").takeIf { it.isNotBlank() && it != "null" },
+            purchasedAt = o.optString("purchased_at").takeIf { it.isNotBlank() && it != "null" },
+            cart = cartItems,
+            timeline = timeline
+        )
     }
 }
