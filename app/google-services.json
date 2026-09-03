@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1091746917809",
+    "project_id": "viavis-live",
+    "storage_bucket": "viavis-live.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1091746917809:android:a0fd34471dbbf2b15be190",
+        "android_client_info": {
+          "package_name": "com.viavis.live"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzh7yPJpSV3MUbCF3nOV_fNHrPAysE_mo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
