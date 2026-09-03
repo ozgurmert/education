@@ -1,9 +1,13 @@
 package com.viavis.live
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.clickable
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
@@ -25,8 +30,18 @@ private const val PREFS = "viavis_live"
 private const val KEY_API_TOKEN = "api_token"
 
 class MainActivity : ComponentActivity() {
+
+    private var pendingJourneyId by mutableStateOf<String?>(null)
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        pendingJourneyId = extractJourneyId(intent)
+        requestNotificationPermissionIfNeeded()
+
         setContent {
             MaterialTheme {
                 ViavisApp(
@@ -38,9 +53,31 @@ class MainActivity : ComponentActivity() {
                             .edit()
                             .putString(KEY_API_TOKEN, token)
                             .apply()
-                    }
+                    },
+                    externalJourneyId = pendingJourneyId,
+                    consumeExternalJourney = { pendingJourneyId = null }
                 )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractJourneyId(intent)?.let { pendingJourneyId = it }
+    }
+
+    private fun extractJourneyId(intent: Intent?): String? {
+        val value = intent?.getStringExtra("journey_id")?.trim().orEmpty()
+        return value.takeIf { it.matches(Regex("^[a-fA-F0-9]{64}$")) }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 }
@@ -54,7 +91,12 @@ private enum class AppTab(val title: String) {
 }
 
 @Composable
-private fun ViavisApp(initialToken: String, saveToken: (String) -> Unit) {
+private fun ViavisApp(
+    initialToken: String,
+    saveToken: (String) -> Unit,
+    externalJourneyId: String?,
+    consumeExternalJourney: () -> Unit
+) {
     var token by remember { mutableStateOf(initialToken) }
 
     if (token.isBlank()) {
@@ -65,6 +107,8 @@ private fun ViavisApp(initialToken: String, saveToken: (String) -> Unit) {
     } else {
         MainShell(
             token = token,
+            externalJourneyId = externalJourneyId,
+            consumeExternalJourney = consumeExternalJourney,
             resetToken = {
                 saveToken("")
                 token = ""
@@ -78,9 +122,7 @@ private fun ApiSetupScreen(onSave: (String) -> Unit) {
     var token by remember { mutableStateOf("") }
 
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Viavis Live") })
-        }
+        topBar = { TopAppBar(title = { Text("Viavis Live") }) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -95,9 +137,7 @@ private fun ApiSetupScreen(onSave: (String) -> Unit) {
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(12.dp))
-            Text(
-                "WooCommerce → Viavis Mobile API ekranında oluşturduğun API anahtarını gir. Anahtar APK içine gömülmez; bu telefonda saklanır."
-            )
+            Text("WooCommerce → Viavis Mobile API ekranında oluşturduğun API anahtarını gir. Anahtar APK içine gömülmez; bu telefonda saklanır.")
             Spacer(Modifier.height(20.dp))
             OutlinedTextField(
                 value = token,
@@ -112,9 +152,7 @@ private fun ApiSetupScreen(onSave: (String) -> Unit) {
                 onClick = { if (token.length >= 32) onSave(token) },
                 enabled = token.length >= 32,
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Bağlan")
-            }
+            ) { Text("Bağlan") }
             Spacer(Modifier.height(10.dp))
             Text(
                 VIAVIS_API_BASE,
@@ -127,42 +165,24 @@ private fun ApiSetupScreen(onSave: (String) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MainShell(token: String, resetToken: () -> Unit) {
+private fun MainShell(
+    token: String,
+    externalJourneyId: String?,
+    consumeExternalJourney: () -> Unit,
+    resetToken: () -> Unit
+) {
     var tab by remember { mutableStateOf(AppTab.OVERVIEW) }
     var days by remember { mutableIntStateOf(7) }
     var selectedJourneyId by remember { mutableStateOf<String?>(null) }
 
-    if (selectedJourneyId != null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("Viavis Live", fontWeight = FontWeight.Bold)
-                            Text("Ziyaretçi Timeline", style = MaterialTheme.typography.labelSmall)
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { selectedJourneyId = null }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Geri")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Box(
-                modifier = Modifier
-                    .padding(padding)
-                    .fillMaxSize()
-            ) {
-                JourneyDetailScreen(
-                    token = token,
-                    journeyId = selectedJourneyId.orEmpty()
-                )
-            }
+    LaunchedEffect(externalJourneyId) {
+        if (!externalJourneyId.isNullOrBlank()) {
+            selectedJourneyId = externalJourneyId
+            consumeExternalJourney()
         }
-        return
     }
+
+    val showingTimeline = !selectedJourneyId.isNullOrBlank()
 
     Scaffold(
         topBar = {
@@ -170,32 +190,46 @@ private fun MainShell(token: String, resetToken: () -> Unit) {
                 title = {
                     Column {
                         Text("Viavis Live", fontWeight = FontWeight.Bold)
-                        Text(tab.title, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            if (showingTimeline) "Ziyaretçi Timeline" else tab.title,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                },
+                navigationIcon = {
+                    if (showingTimeline) {
+                        IconButton(onClick = { selectedJourneyId = null }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Geri")
+                        }
                     }
                 },
                 actions = {
-                    IconButton(onClick = resetToken) {
-                        Icon(Icons.Default.Key, contentDescription = "API anahtarını değiştir")
+                    if (!showingTimeline) {
+                        IconButton(onClick = resetToken) {
+                            Icon(Icons.Default.Key, contentDescription = "API anahtarını değiştir")
+                        }
                     }
                 }
             )
         },
         bottomBar = {
-            NavigationBar {
-                AppTab.entries.forEach { item ->
-                    val icon = when (item) {
-                        AppTab.OVERVIEW -> Icons.Default.Dashboard
-                        AppTab.LIVE -> Icons.Default.Bolt
-                        AppTab.CARTS -> Icons.Default.ShoppingCart
-                        AppTab.PRODUCTS -> Icons.Default.Inventory2
-                        AppTab.VISITORS -> Icons.Default.People
+            if (!showingTimeline) {
+                NavigationBar {
+                    AppTab.entries.forEach { item ->
+                        val icon = when (item) {
+                            AppTab.OVERVIEW -> Icons.Default.Dashboard
+                            AppTab.LIVE -> Icons.Default.Bolt
+                            AppTab.CARTS -> Icons.Default.ShoppingCart
+                            AppTab.PRODUCTS -> Icons.Default.Inventory2
+                            AppTab.VISITORS -> Icons.Default.People
+                        }
+                        NavigationBarItem(
+                            selected = tab == item,
+                            onClick = { tab = item },
+                            icon = { Icon(icon, contentDescription = item.title) },
+                            label = { Text(item.title) }
+                        )
                     }
-                    NavigationBarItem(
-                        selected = tab == item,
-                        onClick = { tab = item },
-                        icon = { Icon(icon, contentDescription = item.title) },
-                        label = { Text(item.title) }
-                    )
                 }
             }
         }
@@ -205,15 +239,23 @@ private fun MainShell(token: String, resetToken: () -> Unit) {
                 .padding(padding)
                 .fillMaxSize()
         ) {
-            if (tab != AppTab.LIVE) {
-                DaySelector(days = days, onDays = { days = it })
-            }
-            when (tab) {
-                AppTab.OVERVIEW -> OverviewScreen(token, days)
-                AppTab.LIVE -> LiveScreen(token) { id -> selectedJourneyId = id }
-                AppTab.CARTS -> AbandonedScreen(token, days) { id -> selectedJourneyId = id }
-                AppTab.PRODUCTS -> ProductsScreen(token, days)
-                AppTab.VISITORS -> VisitorsScreen(token, days) { id -> selectedJourneyId = id }
+            if (showingTimeline) {
+                JourneyDetailScreen(
+                    token = token,
+                    journeyId = selectedJourneyId!!,
+                    onBack = { selectedJourneyId = null }
+                )
+            } else {
+                if (tab != AppTab.LIVE) {
+                    DaySelector(days = days, onDays = { days = it })
+                }
+                when (tab) {
+                    AppTab.OVERVIEW -> OverviewScreen(token, days)
+                    AppTab.LIVE -> LiveScreen(token, onJourney = { selectedJourneyId = it })
+                    AppTab.CARTS -> AbandonedScreen(token, days, onJourney = { selectedJourneyId = it })
+                    AppTab.PRODUCTS -> ProductsScreen(token, days)
+                    AppTab.VISITORS -> VisitorsScreen(token, days, onJourney = { selectedJourneyId = it })
+                }
             }
         }
     }
@@ -270,15 +312,11 @@ private fun OverviewScreen(token: String, days: Int) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Performans", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                IconButton(onClick = { refresh() }) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Yenile")
-                }
+                IconButton(onClick = { refresh() }) { Icon(Icons.Default.Refresh, contentDescription = "Yenile") }
             }
         }
-
         if (loading && data == null) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         error?.let { message -> item { ErrorCard(message) } }
-
         data?.let { d ->
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -334,13 +372,13 @@ private fun LiveScreen(token: String, onJourney: (String) -> Unit) {
     ) {
         item {
             Text("Canlı hareketler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("Ziyaretçiye dokunarak timeline'ı açabilirsin · 15 saniyede bir yenilenir", style = MaterialTheme.typography.bodySmall)
+            Text("15 saniyede bir yenilenir · Bir harekete dokunarak Timeline'ı açabilirsin.", style = MaterialTheme.typography.bodySmall)
         }
         error?.let { item { ErrorCard(it) } }
         items(events, key = { it.id }) { event ->
-            EventCard(event) {
+            EventCard(event, onClick = {
                 if (event.journeyId.isNotBlank()) onJourney(event.journeyId)
-            }
+            })
         }
     }
 }
@@ -367,9 +405,8 @@ private fun AbandonedScreen(token: String, days: Int, onJourney: (String) -> Uni
         if (rows.isEmpty() && error == null) item { Text("Bu dönem için terk edilmiş sepet görünmüyor.") }
         items(rows, key = { it.journeyId }) { item ->
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onJourney(item.journeyId) }
+                onClick = { onJourney(item.journeyId) },
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -386,7 +423,7 @@ private fun AbandonedScreen(token: String, days: Int, onJourney: (String) -> Uni
                         item.cartNames.take(5).forEach { Text("• $it") }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -444,16 +481,12 @@ private fun VisitorsScreen(token: String, days: Int, onJourney: (String) -> Unit
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item {
-            Text("Ziyaretçiler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("Bir ziyaretçiye dokunarak tüm hareketlerini görebilirsin.", style = MaterialTheme.typography.bodySmall)
-        }
+        item { Text("Ziyaretçiler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         error?.let { item { ErrorCard(it) } }
         items(rows, key = { it.journeyId }) { j ->
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onJourney(j.journeyId) }
+                onClick = { onJourney(j.journeyId) },
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -466,7 +499,7 @@ private fun VisitorsScreen(token: String, days: Int, onJourney: (String) -> Unit
                         Text("Sepet: ${j.cartItems} ürün · ${money(j.cartTotal)}", fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -474,41 +507,64 @@ private fun VisitorsScreen(token: String, days: Int, onJourney: (String) -> Unit
 }
 
 @Composable
-private fun JourneyDetailScreen(token: String, journeyId: String) {
+private fun JourneyDetailScreen(token: String, journeyId: String, onBack: () -> Unit) {
     val api = remember(token) { ApiClient(token) }
     var detail by remember(journeyId) { mutableStateOf<JourneyDetail?>(null) }
     var error by remember(journeyId) { mutableStateOf<String?>(null) }
     var loading by remember(journeyId) { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(journeyId, token) {
-        loading = true
-        error = null
-        runCatching { api.journey(journeyId) }
-            .onSuccess { detail = it }
-            .onFailure { error = it.message ?: "Timeline alınamadı" }
-        loading = false
+    fun refresh() {
+        scope.launch {
+            loading = true
+            error = null
+            runCatching { api.journey(journeyId) }
+                .onSuccess { detail = it }
+                .onFailure { error = it.message ?: "Timeline alınamadı" }
+            loading = false
+        }
     }
+
+    LaunchedEffect(journeyId, token) { refresh() }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        if (loading) {
-            item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Ziyaretçi Timeline", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Hareketler kronolojik sıradadır.", style = MaterialTheme.typography.bodySmall)
+                }
+                IconButton(onClick = { refresh() }) { Icon(Icons.Default.Refresh, contentDescription = "Yenile") }
+            }
         }
-        error?.let { message -> item { ErrorCard(message) } }
+
+        if (loading && detail == null) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        error?.let { message ->
+            item {
+                ErrorCard(message)
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onBack) { Text("Geri dön") }
+            }
+        }
 
         detail?.let { d ->
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("Misafir #${d.visitor}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(4.dp))
-                        Text("Durum: ${d.status}")
-                        if (d.cartItems > 0 || d.cartTotal > 0) {
-                            Text("Sepet: ${d.cartItems} ürün · ${money(d.cartTotal)}", fontWeight = FontWeight.SemiBold)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Misafir #${d.visitor}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(d.status, fontWeight = FontWeight.SemiBold)
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Sepet: ${d.cartItems} ürün · ${money(d.cartTotal)}")
                         d.checkoutStarted?.let { Text("Checkout: $it", style = MaterialTheme.typography.bodySmall) }
                         d.purchasedAt?.let { Text("Satın alma: $it", style = MaterialTheme.typography.bodySmall) }
                     }
@@ -516,35 +572,59 @@ private fun JourneyDetailScreen(token: String, journeyId: String) {
             }
 
             if (d.cart.isNotEmpty()) {
-                item { Text("Sepet içeriği", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-                items(d.cart) { item ->
+                item { Text("Mevcut / son sepet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                items(d.cart) { cartItem ->
                     Card(Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier.padding(14.dp).fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text(item.name, fontWeight = FontWeight.SemiBold)
-                                Text("Adet: ${formatQty(item.quantity)}", style = MaterialTheme.typography.bodySmall)
+                                Text(cartItem.name, fontWeight = FontWeight.SemiBold)
+                                Text("Adet: ${formatQty(cartItem.quantity)}", style = MaterialTheme.typography.bodySmall)
                             }
-                            if (item.lineTotal > 0) Text(money(item.lineTotal), fontWeight = FontWeight.SemiBold)
+                            if (cartItem.lineTotal > 0) Text(money(cartItem.lineTotal), fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
 
-            item {
-                Text(
-                    "Timeline · ${d.timeline.size} hareket",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            item { Text("Hareket geçmişi", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
 
             if (d.timeline.isEmpty()) {
-                item { Text("Bu ziyaret için kaydedilmiş hareket bulunamadı.") }
+                item { Text("Bu ziyaret için kayıtlı hareket bulunamadı.") }
             } else {
                 items(d.timeline, key = { it.id }) { event -> TimelineEventCard(event) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineEventCard(event: TimelineEvent) {
+    val icon = when (event.type) {
+        "begin_checkout", "checkout_item" -> Icons.Default.CreditCard
+        "add_to_cart" -> Icons.Default.AddShoppingCart
+        "remove_from_cart", "cart_emptied" -> Icons.Default.RemoveShoppingCart
+        "order_success", "purchase_item" -> Icons.Default.Paid
+        "product_view" -> Icons.Default.Visibility
+        "coupon_applied", "coupon_removed" -> Icons.Default.LocalOffer
+        else -> Icons.Default.Bolt
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(icon, contentDescription = null)
+            Column(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(event.label, fontWeight = FontWeight.Bold)
+                    Text(event.time, style = MaterialTheme.typography.labelSmall)
+                }
+                event.productName?.let { Text(it) }
+                if (event.quantity > 0 && event.productName != null) {
+                    Text("Adet: ${formatQty(event.quantity)}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (event.value > 0) Text(money(event.value), fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -563,13 +643,16 @@ private fun MetricCard(label: String, value: String, modifier: Modifier = Modifi
 
 @Composable
 private fun EventCard(event: EventItem, onClick: () -> Unit) {
-    val icon = eventIcon(event.type)
+    val icon = when (event.type) {
+        "begin_checkout" -> Icons.Default.CreditCard
+        "add_to_cart" -> Icons.Default.AddShoppingCart
+        "remove_from_cart" -> Icons.Default.RemoveShoppingCart
+        "order_success", "purchase_item" -> Icons.Default.Paid
+        "product_view" -> Icons.Default.Visibility
+        else -> Icons.Default.Bolt
+    }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = event.journeyId.isNotBlank(), onClick = onClick)
-    ) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(icon, contentDescription = null)
             Column(Modifier.weight(1f)) {
@@ -579,47 +662,10 @@ private fun EventCard(event: EventItem, onClick: () -> Unit) {
                 }
                 Text("Misafir #${event.visitor}", style = MaterialTheme.typography.bodySmall)
                 event.productName?.let { Text(it) }
-                if (event.quantity > 0) Text("Adet: ${formatQty(event.quantity)}", style = MaterialTheme.typography.bodySmall)
-                if (event.value > 0) Text(money(event.value), fontWeight = FontWeight.SemiBold)
-            }
-            if (event.journeyId.isNotBlank()) {
-                Icon(Icons.Default.ChevronRight, contentDescription = "Timeline")
-            }
-        }
-    }
-}
-
-@Composable
-private fun TimelineEventCard(event: TimelineEvent) {
-    val icon = eventIcon(event.type)
-
-    Card(Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Icon(icon, contentDescription = null)
-            Column(Modifier.weight(1f)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(event.label, fontWeight = FontWeight.Bold)
-                    Text(event.time, style = MaterialTheme.typography.labelSmall)
-                }
-                event.productName?.let { Text(it) }
-                if (event.quantity > 0) Text("Adet: ${formatQty(event.quantity)}", style = MaterialTheme.typography.bodySmall)
                 if (event.value > 0) Text(money(event.value), fontWeight = FontWeight.SemiBold)
             }
         }
     }
-}
-
-private fun eventIcon(type: String) = when (type) {
-    "begin_checkout", "checkout_item" -> Icons.Default.CreditCard
-    "add_to_cart" -> Icons.Default.AddShoppingCart
-    "remove_from_cart", "cart_emptied" -> Icons.Default.RemoveShoppingCart
-    "order_success", "purchase_item" -> Icons.Default.Paid
-    "product_view" -> Icons.Default.Visibility
-    "coupon_applied", "coupon_removed" -> Icons.Default.LocalOffer
-    else -> Icons.Default.Bolt
 }
 
 @Composable
@@ -633,10 +679,8 @@ private fun ErrorCard(message: String) {
     }
 }
 
-private fun money(value: Double): String {
-    return NumberFormat.getCurrencyInstance(Locale("tr", "TR")).format(value)
-}
+private fun formatQty(value: Double): String =
+    if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
 
-private fun formatQty(value: Double): String {
-    return if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
-}
+private fun money(value: Double): String =
+    NumberFormat.getCurrencyInstance(Locale("tr", "TR")).format(value)
