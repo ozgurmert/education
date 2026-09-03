@@ -3,6 +3,7 @@ package com.viavis.live
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -129,6 +130,39 @@ private fun ApiSetupScreen(onSave: (String) -> Unit) {
 private fun MainShell(token: String, resetToken: () -> Unit) {
     var tab by remember { mutableStateOf(AppTab.OVERVIEW) }
     var days by remember { mutableIntStateOf(7) }
+    var selectedJourneyId by remember { mutableStateOf<String?>(null) }
+
+    if (selectedJourneyId != null) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("Viavis Live", fontWeight = FontWeight.Bold)
+                            Text("Ziyaretçi Timeline", style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { selectedJourneyId = null }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Geri")
+                        }
+                    }
+                )
+            }
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+            ) {
+                JourneyDetailScreen(
+                    token = token,
+                    journeyId = selectedJourneyId.orEmpty()
+                )
+            }
+        }
+        return
+    }
 
     Scaffold(
         topBar = {
@@ -176,10 +210,10 @@ private fun MainShell(token: String, resetToken: () -> Unit) {
             }
             when (tab) {
                 AppTab.OVERVIEW -> OverviewScreen(token, days)
-                AppTab.LIVE -> LiveScreen(token)
-                AppTab.CARTS -> AbandonedScreen(token, days)
+                AppTab.LIVE -> LiveScreen(token) { id -> selectedJourneyId = id }
+                AppTab.CARTS -> AbandonedScreen(token, days) { id -> selectedJourneyId = id }
                 AppTab.PRODUCTS -> ProductsScreen(token, days)
-                AppTab.VISITORS -> VisitorsScreen(token, days)
+                AppTab.VISITORS -> VisitorsScreen(token, days) { id -> selectedJourneyId = id }
             }
         }
     }
@@ -279,7 +313,7 @@ private fun OverviewScreen(token: String, days: Int) {
 }
 
 @Composable
-private fun LiveScreen(token: String) {
+private fun LiveScreen(token: String, onJourney: (String) -> Unit) {
     val api = remember(token) { ApiClient(token) }
     var events by remember { mutableStateOf<List<EventItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -300,15 +334,19 @@ private fun LiveScreen(token: String) {
     ) {
         item {
             Text("Canlı hareketler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("15 saniyede bir yenilenir", style = MaterialTheme.typography.bodySmall)
+            Text("Ziyaretçiye dokunarak timeline'ı açabilirsin · 15 saniyede bir yenilenir", style = MaterialTheme.typography.bodySmall)
         }
         error?.let { item { ErrorCard(it) } }
-        items(events, key = { it.id }) { event -> EventCard(event) }
+        items(events, key = { it.id }) { event ->
+            EventCard(event) {
+                if (event.journeyId.isNotBlank()) onJourney(event.journeyId)
+            }
+        }
     }
 }
 
 @Composable
-private fun AbandonedScreen(token: String, days: Int) {
+private fun AbandonedScreen(token: String, days: Int, onJourney: (String) -> Unit) {
     val api = remember(token) { ApiClient(token) }
     var rows by remember { mutableStateOf<List<AbandonedItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -328,7 +366,11 @@ private fun AbandonedScreen(token: String, days: Int) {
         error?.let { item { ErrorCard(it) } }
         if (rows.isEmpty() && error == null) item { Text("Bu dönem için terk edilmiş sepet görünmüyor.") }
         items(rows, key = { it.journeyId }) { item ->
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onJourney(item.journeyId) }
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Misafir #${item.visitor}", fontWeight = FontWeight.Bold)
@@ -337,12 +379,14 @@ private fun AbandonedScreen(token: String, days: Int) {
                     Text("${item.cartItems} ürün · ${item.lastSeen}", style = MaterialTheme.typography.bodySmall)
                     if (item.checkoutStarted) {
                         Spacer(Modifier.height(6.dp))
-                        AssistChip(onClick = {}, label = { Text("Checkout'a ulaştı") })
+                        AssistChip(onClick = { onJourney(item.journeyId) }, label = { Text("Checkout'a ulaştı") })
                     }
                     if (item.cartNames.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                         item.cartNames.take(5).forEach { Text("• $it") }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -384,7 +428,7 @@ private fun ProductsScreen(token: String, days: Int) {
 }
 
 @Composable
-private fun VisitorsScreen(token: String, days: Int) {
+private fun VisitorsScreen(token: String, days: Int, onJourney: (String) -> Unit) {
     val api = remember(token) { ApiClient(token) }
     var rows by remember { mutableStateOf<List<JourneyItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -400,10 +444,17 @@ private fun VisitorsScreen(token: String, days: Int) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item { Text("Ziyaretçiler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        item {
+            Text("Ziyaretçiler", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Bir ziyaretçiye dokunarak tüm hareketlerini görebilirsin.", style = MaterialTheme.typography.bodySmall)
+        }
         error?.let { item { ErrorCard(it) } }
         items(rows, key = { it.journeyId }) { j ->
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onJourney(j.journeyId) }
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Misafir #${j.visitor}", fontWeight = FontWeight.Bold)
@@ -414,7 +465,86 @@ private fun VisitorsScreen(token: String, days: Int) {
                     if (j.cartItems > 0) {
                         Text("Sepet: ${j.cartItems} ürün · ${money(j.cartTotal)}", fontWeight = FontWeight.SemiBold)
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Timeline'ı aç →", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun JourneyDetailScreen(token: String, journeyId: String) {
+    val api = remember(token) { ApiClient(token) }
+    var detail by remember(journeyId) { mutableStateOf<JourneyDetail?>(null) }
+    var error by remember(journeyId) { mutableStateOf<String?>(null) }
+    var loading by remember(journeyId) { mutableStateOf(true) }
+
+    LaunchedEffect(journeyId, token) {
+        loading = true
+        error = null
+        runCatching { api.journey(journeyId) }
+            .onSuccess { detail = it }
+            .onFailure { error = it.message ?: "Timeline alınamadı" }
+        loading = false
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (loading) {
+            item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        }
+        error?.let { message -> item { ErrorCard(message) } }
+
+        detail?.let { d ->
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Misafir #${d.visitor}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Durum: ${d.status}")
+                        if (d.cartItems > 0 || d.cartTotal > 0) {
+                            Text("Sepet: ${d.cartItems} ürün · ${money(d.cartTotal)}", fontWeight = FontWeight.SemiBold)
+                        }
+                        d.checkoutStarted?.let { Text("Checkout: $it", style = MaterialTheme.typography.bodySmall) }
+                        d.purchasedAt?.let { Text("Satın alma: $it", style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+
+            if (d.cart.isNotEmpty()) {
+                item { Text("Sepet içeriği", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                items(d.cart) { item ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(item.name, fontWeight = FontWeight.SemiBold)
+                                Text("Adet: ${formatQty(item.quantity)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (item.lineTotal > 0) Text(money(item.lineTotal), fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    "Timeline · ${d.timeline.size} hareket",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (d.timeline.isEmpty()) {
+                item { Text("Bu ziyaret için kaydedilmiş hareket bulunamadı.") }
+            } else {
+                items(d.timeline, key = { it.id }) { event -> TimelineEventCard(event) }
             }
         }
     }
@@ -432,17 +562,14 @@ private fun MetricCard(label: String, value: String, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun EventCard(event: EventItem) {
-    val icon = when (event.type) {
-        "begin_checkout" -> Icons.Default.CreditCard
-        "add_to_cart" -> Icons.Default.AddShoppingCart
-        "remove_from_cart" -> Icons.Default.RemoveShoppingCart
-        "order_success", "purchase_item" -> Icons.Default.Paid
-        "product_view" -> Icons.Default.Visibility
-        else -> Icons.Default.Bolt
-    }
+private fun EventCard(event: EventItem, onClick: () -> Unit) {
+    val icon = eventIcon(event.type)
 
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = event.journeyId.isNotBlank(), onClick = onClick)
+    ) {
         Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(icon, contentDescription = null)
             Column(Modifier.weight(1f)) {
@@ -452,10 +579,47 @@ private fun EventCard(event: EventItem) {
                 }
                 Text("Misafir #${event.visitor}", style = MaterialTheme.typography.bodySmall)
                 event.productName?.let { Text(it) }
+                if (event.quantity > 0) Text("Adet: ${formatQty(event.quantity)}", style = MaterialTheme.typography.bodySmall)
+                if (event.value > 0) Text(money(event.value), fontWeight = FontWeight.SemiBold)
+            }
+            if (event.journeyId.isNotBlank()) {
+                Icon(Icons.Default.ChevronRight, contentDescription = "Timeline")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineEventCard(event: TimelineEvent) {
+    val icon = eventIcon(event.type)
+
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(icon, contentDescription = null)
+            Column(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(event.label, fontWeight = FontWeight.Bold)
+                    Text(event.time, style = MaterialTheme.typography.labelSmall)
+                }
+                event.productName?.let { Text(it) }
+                if (event.quantity > 0) Text("Adet: ${formatQty(event.quantity)}", style = MaterialTheme.typography.bodySmall)
                 if (event.value > 0) Text(money(event.value), fontWeight = FontWeight.SemiBold)
             }
         }
     }
+}
+
+private fun eventIcon(type: String) = when (type) {
+    "begin_checkout", "checkout_item" -> Icons.Default.CreditCard
+    "add_to_cart" -> Icons.Default.AddShoppingCart
+    "remove_from_cart", "cart_emptied" -> Icons.Default.RemoveShoppingCart
+    "order_success", "purchase_item" -> Icons.Default.Paid
+    "product_view" -> Icons.Default.Visibility
+    "coupon_applied", "coupon_removed" -> Icons.Default.LocalOffer
+    else -> Icons.Default.Bolt
 }
 
 @Composable
@@ -471,4 +635,8 @@ private fun ErrorCard(message: String) {
 
 private fun money(value: Double): String {
     return NumberFormat.getCurrencyInstance(Locale("tr", "TR")).format(value)
+}
+
+private fun formatQty(value: Double): String {
+    return if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
 }
