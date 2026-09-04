@@ -1,6 +1,8 @@
 package com.viavis.live
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -99,6 +101,11 @@ data class JourneyDetail(
 
 class ApiClient(private val token: String) {
 
+    // OverviewScreen eski isteği iptal etmeden yeni gün aralığı isteği başlatabildiği için
+    // dashboard çağrılarını sıraya alıyoruz. Böylece eski 7 günlük cevap, daha sonra
+    // seçilmiş "Bugün" cevabının üstüne yazamaz.
+    private val dashboardMutex = Mutex()
+
     /**
      * Every GET request is intentionally cache-busted. The Viavis site sits behind
      * LiteSpeed/Cloudflare and range queries must never reuse a response generated
@@ -133,10 +140,11 @@ class ApiClient(private val token: String) {
         }
     }
 
-    suspend fun dashboard(days: Int): DashboardData {
+    suspend fun dashboard(days: Int): DashboardData = dashboardMutex.withLock {
         val safeDays = normalizeDays(days)
         val o = get("dashboard?days=$safeDays&range=${rangeName(safeDays)}")
-        return DashboardData(
+        verifyPeriodIfPresent(o, safeDays)
+        DashboardData(
             viewers = o.optInt("viewers"),
             cartUsers = o.optInt("cart_users"),
             checkoutUsers = o.optInt("checkout_users"),
@@ -180,8 +188,9 @@ class ApiClient(private val token: String) {
 
     suspend fun products(days: Int): List<ProductItem> {
         val safeDays = normalizeDays(days)
-        val array = get("products?days=$safeDays&range=${rangeName(safeDays)}")
-            .optJSONArray("items") ?: JSONArray()
+        val root = get("products?days=$safeDays&range=${rangeName(safeDays)}")
+        verifyPeriodIfPresent(root, safeDays)
+        val array = root.optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -205,8 +214,9 @@ class ApiClient(private val token: String) {
 
     suspend fun journeys(days: Int): List<JourneyItem> {
         val safeDays = normalizeDays(days)
-        val array = get("journeys?days=$safeDays&range=${rangeName(safeDays)}")
-            .optJSONArray("items") ?: JSONArray()
+        val root = get("journeys?days=$safeDays&range=${rangeName(safeDays)}")
+        verifyPeriodIfPresent(root, safeDays)
+        val array = root.optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -228,8 +238,9 @@ class ApiClient(private val token: String) {
 
     suspend fun abandoned(days: Int): List<AbandonedItem> {
         val safeDays = normalizeDays(days)
-        val array = get("abandoned?days=$safeDays&range=${rangeName(safeDays)}")
-            .optJSONArray("items") ?: JSONArray()
+        val root = get("abandoned?days=$safeDays&range=${rangeName(safeDays)}")
+        verifyPeriodIfPresent(root, safeDays)
+        val array = root.optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -305,6 +316,14 @@ class ApiClient(private val token: String) {
             cart = cartItems,
             timeline = timeline
         )
+    }
+
+    private fun verifyPeriodIfPresent(root: JSONObject, requestedDays: Int) {
+        val period = root.optJSONObject("_period") ?: return
+        val responseDays = period.optInt("days", requestedDays)
+        if (responseDays != requestedDays) {
+            throw IllegalStateException("Gün filtresi yanıtı uyuşmadı. Tekrar deneyin.")
+        }
     }
 
     private fun normalizeDays(days: Int): Int = when (days) {
