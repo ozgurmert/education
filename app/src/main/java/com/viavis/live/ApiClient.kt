@@ -99,13 +99,25 @@ data class JourneyDetail(
 
 class ApiClient(private val token: String) {
 
+    /**
+     * Every GET request is intentionally cache-busted. The Viavis site sits behind
+     * LiteSpeed/Cloudflare and range queries must never reuse a response generated
+     * for another `days` value.
+     */
     private suspend fun get(path: String): JSONObject = withContext(Dispatchers.IO) {
-        val connection = URL(VIAVIS_API_BASE + path).openConnection() as HttpURLConnection
+        val separator = if (path.contains('?')) '&' else '?'
+        val requestPath = "$path${separator}_viavis_ts=${System.currentTimeMillis()}"
+        val connection = URL(VIAVIS_API_BASE + requestPath).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = 12_000
         connection.readTimeout = 12_000
+        connection.useCaches = false
+        connection.defaultUseCaches = false
         connection.setRequestProperty("Authorization", "Bearer $token")
         connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate")
+        connection.setRequestProperty("Pragma", "no-cache")
+        connection.setRequestProperty("Expires", "0")
 
         try {
             val code = connection.responseCode
@@ -122,7 +134,8 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun dashboard(days: Int): DashboardData {
-        val o = get("dashboard?days=$days")
+        val safeDays = normalizeDays(days)
+        val o = get("dashboard?days=$safeDays&range=${rangeName(safeDays)}")
         return DashboardData(
             viewers = o.optInt("viewers"),
             cartUsers = o.optInt("cart_users"),
@@ -137,7 +150,12 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun events(limit: Int = 50, afterId: Long = 0): List<EventItem> {
-        val suffix = if (afterId > 0) "events?limit=$limit&after_id=$afterId" else "events?limit=$limit"
+        val safeLimit = limit.coerceIn(1, 200)
+        val suffix = if (afterId > 0) {
+            "events?limit=$safeLimit&after_id=$afterId"
+        } else {
+            "events?limit=$safeLimit"
+        }
         val array = get(suffix).optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
@@ -161,7 +179,9 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun products(days: Int): List<ProductItem> {
-        val array = get("products?days=$days").optJSONArray("items") ?: JSONArray()
+        val safeDays = normalizeDays(days)
+        val array = get("products?days=$safeDays&range=${rangeName(safeDays)}")
+            .optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -184,7 +204,9 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun journeys(days: Int): List<JourneyItem> {
-        val array = get("journeys?days=$days").optJSONArray("items") ?: JSONArray()
+        val safeDays = normalizeDays(days)
+        val array = get("journeys?days=$safeDays&range=${rangeName(safeDays)}")
+            .optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -205,7 +227,9 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun abandoned(days: Int): List<AbandonedItem> {
-        val array = get("abandoned?days=$days").optJSONArray("items") ?: JSONArray()
+        val safeDays = normalizeDays(days)
+        val array = get("abandoned?days=$safeDays&range=${rangeName(safeDays)}")
+            .optJSONArray("items") ?: JSONArray()
         return buildList {
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
@@ -232,7 +256,10 @@ class ApiClient(private val token: String) {
     }
 
     suspend fun journey(journeyId: String): JourneyDetail {
-        val o = get("journey/$journeyId")
+        val cleanJourneyId = journeyId.trim()
+        require(cleanJourneyId.matches(Regex("^[a-fA-F0-9]{64}$"))) { "Geçersiz journey ID" }
+
+        val o = get("journey/$cleanJourneyId")
 
         val cartArray = o.optJSONArray("cart") ?: JSONArray()
         val cartItems = buildList {
@@ -279,4 +306,11 @@ class ApiClient(private val token: String) {
             timeline = timeline
         )
     }
+
+    private fun normalizeDays(days: Int): Int = when (days) {
+        1, 7, 30, 60 -> days
+        else -> 7
+    }
+
+    private fun rangeName(days: Int): String = if (days == 1) "today" else "${days}d"
 }
